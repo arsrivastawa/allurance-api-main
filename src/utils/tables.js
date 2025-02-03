@@ -309,7 +309,7 @@ const TABLES = {
   INVENTORY: "ine_inventory",
 
   COLLECTIONS: 'ine_collections',
-
+  TEMPUSER: 'ine_temp_user',
 
 
 };

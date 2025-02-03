@@ -23,6 +23,7 @@ const tableName3 = TABLE.ROLE;
 const tableName4 = TABLE.MY_REFERRAL;
 const tableName5 = TABLE.SETTINGS;
 const tableName7 = TABLE.ECOMMMETA; // Notification
+const tableName8 = TABLE.TEMPUSER;
 
 // Frontend - Login
 router.post('/login/frontuserslogin', async (req, res) => {
@@ -183,10 +184,7 @@ router.post('/', upload.any(), async (req, res) => {
     const rolePrefixName = result1[0]?.prefix || '';
     const [result2] = await pool.query(`SELECT COUNT(*) as count FROM \`${tableName}\` WHERE role_id = ?`, [role_id]);
     const formattedNumber = String(result2[0]?.count + 1).padStart(4, '0');
-    const newPrefix = `${rolePrefixName}A${formattedNumber}`;
-
-    
-    
+    const newPrefix = `${rolePrefixName}A${formattedNumber}`; 
 
     // // Password Validation
     // if (!validatePassword(password)) {
@@ -859,7 +857,7 @@ router.get('/verify-token', (req, res) => {
 
 router.post('/sendOtp', async (req, res) => {
   try {
-    const { phone } = req.body;
+    const { phone,is_resend } = req.body;
     if (!phone) {
       return sendResponse(res, { error: 'Phone number field is required', status: false }, 400);
     }
@@ -869,8 +867,13 @@ router.post('/sendOtp', async (req, res) => {
     if (existingRecord.length === 0) {
       return sendResponse(res, { error: 'Account not found for this phone number', status: false }, 404);
     }
-
-    const otp = generateOTP(6);
+    let otp ;
+    if(!is_resend){
+       otp = generateOTP(6);
+    }else{
+      otp = existingRecord[0].login_otp;
+    }
+    
     await pool.query(`UPDATE ${tableName} SET login_otp = ?, updated_at = NOW() WHERE phone = ?`, [otp, phone]);
     const [updatedRecord] = await pool.query(`SELECT * FROM ${tableName} WHERE phone = ?`, [phone]);
     await activityLog(ine_users_ModuleID, existingRecord, updatedRecord, 2, 0);
@@ -925,5 +928,134 @@ router.post('/validateLoginOtp', async (req, res) => {
     return sendResponse(res, { error: `Error occurred: ${error.message}` }, 500);
   }
 });
+router.post('/sendSignupOtp', async (req, res) => {
+  try {
+    const {phone,email,is_resend } = req.body;
+  // Validate request data
+      if (!email || !phone) {
+        return sendResponse(res, { error: 'Email and Phome number field is required', status: false }, 400);
+      }
+  
+    // Email Validation
+    if (email) {
+      const emailExists = await checkEmailExistOrNot(tableName, email);
+      if (emailExists) {
+        return sendResponse(res, { error: 'Email already exists', status: false }, 409);
+      }
+    }
+    if (phone) {
+      const phoneExists = await checkPhoneExistOrNot(tableName, phone);
+      if (phoneExists) {
+        return sendResponse(res, { error: 'Phone number already exists', status: false }, 409);
+      }
+    }
+    let otp ;
+    if(!is_resend){
+       otp = generateOTP(6);
+    }else{
+      otp = existingRecord[0].login_otp;
+    }
+    // Check if temp record exists
+    const [existingRecord] = await pool.query(`SELECT id,otp FROM ${tableName8} WHERE phone = ?`, [phone]);
+    if (existingRecord.length === 0) {
+      await pool.query(`INSERT INTO ${tableName8} (phone, email, otp,updated_at) VALUES (?,?,?,NOW())`, [
+        phone, email, otp]);
+    }
+   else{
+    await pool.query(`UPDATE ${tableName8} SET otp = ?, updated_at = NOW() WHERE id = ?`, [otp, existingRecord[0].id]);
+   }
 
+    // await sendOTPEmail(email, otp);
+    return sendResponse(res, { message: 'OTP has been sent to your mobile', status: true ,otp:otp}, 200);
+
+  } catch (error) {
+    return sendResponse(res, { error: `Error occurred: ${error.message}` }, 500);
+  }
+});
+router.post('/validateOtpAndSignup', async (req, res) => {
+  try {
+    const { phone, otp ,referral_code ,first_name ,last_name,email} = req.body;
+
+    var otpconvert = parseInt(otp, 10);
+    const role_id = 9;
+    // Validate request data
+    if (!first_name || !last_name || !email || !phone || !otpconvert) {
+      return sendResponse(res, { error: 'First Name, Last Name, Email, OTP and Phone number  field is required', status: false }, 400);
+    }
+
+    // Email Validation
+    if (email) {
+      const emailExists = await checkEmailExistOrNot(tableName, email);
+      if (emailExists) {
+        return sendResponse(res, { error: 'Email already exists', status: false }, 409);
+      }
+    }
+    if (phone) {
+      const phoneExists = await checkPhoneExistOrNot(tableName, phone);
+      if (phoneExists) {
+        return sendResponse(res, { error: 'Phone number already exists', status: false }, 409);
+      }
+    }
+    const [existingRecordResults] = await pool.query(`SELECT * FROM ${tableName8} WHERE phone = ?`, [phone]);
+    const existingRecord = existingRecordResults[0];
+    if (parseInt(existingRecord.otp ,10)!== otpconvert) {
+      return sendResponse(res, { error: 'Sorry, OTP is Invalid', status: false }, 400);
+    }
+    
+     // Generate PreFix
+     const [result1] = await pool.query(`SELECT prefix FROM \`${tableName3}\` WHERE id = ? LIMIT 1`, [role_id]);
+     const rolePrefixName = result1[0]?.prefix || '';
+     const [result2] = await pool.query(`SELECT COUNT(*) as count FROM \`${tableName}\` WHERE role_id = ?`, [role_id]);
+     const formattedNumber = String(result2[0]?.count + 1).padStart(4, '0');
+     const newPrefix = `${rolePrefixName}A${formattedNumber}`; 
+     
+     // Hash the password
+     const hashedPassword = newPrefix ? await bcrypt.hash(newPrefix, 10) : undefined;
+ 
+     // Generate unique referral code
+     const uniqueCode = uniqueId.slice(0, 8); // Generate a short UUID
+     const randomCode = Math.floor(100 + Math.random() * 900);
+     const referralCode = `${first_name}-${last_name}-${uniqueCode}${randomCode}`;
+ 
+    // Insertion
+    const [insertResult] = await pool.query(`INSERT INTO ${tableName} (role_id, first_name, last_name, email, password, prefix_id, phone) VALUES (?,?,?,?,?,?, ? )`, [
+      role_id, first_name, last_name, email, hashedPassword, newPrefix, phone
+    ]);
+     const insertedRecordId = insertResult.insertId;
+ 
+     // User Details - Insertion
+     await pool.query(`INSERT INTO ${tableName2} (user_id, my_referral_code) VALUES (?,?)`, [
+       insertedRecordId, referralCode
+     ]);
+ 
+ 
+     // Find refer_id if referral_code is provided
+     let referId = null;
+     if (referral_code) {
+       const [referralUser] = await pool.query(`SELECT user_id FROM ${tableName2} WHERE my_referral_code = ? LIMIT 1`, [referral_code]);
+       if (referralUser.length > 0) {
+         referId = referralUser[0].user_id;
+       }
+     }
+ 
+     let referAmt = 0;
+     const [settingData] = await pool.query(`SELECT referral_amount FROM ${tableName5} WHERE id = ? LIMIT 1`, [1]);
+     if (settingData.length > 0) {
+       referAmt = settingData[0].referral_amount;
+     }
+ 
+     if (referId) {
+       await pool.query(`INSERT INTO ${tableName4} (user_id, refer_id, amount) VALUES (?,?,?)`, [
+         insertedRecordId, referId, referAmt
+       ]);
+     }
+     await pool.query(`DELETE FROM  ${tableName8} WHERE id = ?`, [existingRecord.id]);
+    return sendResponse(res, { message: "Account Successfully Registered", status: true }, 201);
+  
+
+
+  } catch (error) {
+    return sendResponse(res, { error: `Error occurred: ${error.message}` }, 500);
+  }
+});
 module.exports = router;
